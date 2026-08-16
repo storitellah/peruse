@@ -42,6 +42,13 @@ function TileImpl({ photo, width, height, density }: Props) {
         </span>
       )}
 
+      {photo.isLivePhoto && (
+        <span className="tile-live" title="Live Photo">
+          <span className="live-dot" />
+          LIVE
+        </span>
+      )}
+
       {density !== "compact" && (topTag || photo.exif.place?.city) && (
         <figcaption className="tile-cap">
           {topTag && <span className="tile-tag">{topTag}</span>}

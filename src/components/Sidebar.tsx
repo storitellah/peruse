@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import { useStore } from "../state/store";
+import { useMemo, useRef } from "react";
+import { useStore, canUseFsAccess } from "../state/store";
 import type { ActiveFilter } from "../state/store";
 import type { TabId } from "../types";
 import { Icon, type IconName } from "./Icon";
@@ -23,6 +23,20 @@ export function Sidebar() {
   const aiProgress = useStore((s) => s.aiProgress);
   const runAiTagging = useStore((s) => s.runAiTagging);
   const importDirectory = useStore((s) => s.importDirectory);
+  const importFiles = useStore((s) => s.importFiles);
+  const scanning = useStore((s) => s.scanning);
+  const scanFound = useStore((s) => s.scanFound);
+  const processed = useStore((s) => s.processed);
+  const totalPhotos = useStore((s) => s.photos.length);
+
+  const inputRef = useRef<HTMLInputElement>(null);
+  // Adding folders works whether or not the browser has the FS Access API.
+  // With it we can re-open handles and write sidecars in place; without it we
+  // fall through to a directory <input>. Either way photos load automatically.
+  const addFolder = () => {
+    if (canUseFsAccess()) void importDirectory();
+    else inputRef.current?.click();
+  };
 
   const live = useMemo(() => photos.filter((p) => !p.softDeleted), [photos]);
 
@@ -153,10 +167,31 @@ export function Sidebar() {
         )}
 
         <div className="side-section">
-          <button className="side-row sm add" onClick={() => void importDirectory()}>
+          <button className="side-row sm add" onClick={addFolder} disabled={scanning}>
             <Icon name="folder" size={15} />
             <span>Add another folder…</span>
           </button>
+          {(scanning || processed < totalPhotos) && (
+            <div className="import-status">
+              <span className="spinner sm" />
+              {scanning
+                ? `Scanning… ${scanFound} found`
+                : `Loading ${processed}/${totalPhotos}`}
+            </div>
+          )}
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            // @ts-expect-error non-standard but widely supported directory pick
+            webkitdirectory=""
+            style={{ display: "none" }}
+            onChange={(e) => {
+              if (e.target.files?.length) void importFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
         </div>
       </div>
     </aside>

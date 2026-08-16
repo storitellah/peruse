@@ -55,7 +55,14 @@ export function Inspector() {
           </span>
         </button>
 
-        <div className="insp-name">{photo.name}</div>
+        <div className="insp-name">
+          {photo.name}
+          {photo.isLivePhoto && (
+            <span className="insp-live" title="Live Photo — the still is cataloged; the paired video is ignored">
+              <span className="live-dot" /> LIVE
+            </span>
+          )}
+        </div>
         <div className="insp-sub">
           {formatDateTime(photo.exif.takenAt)}
           {photo.exif.timezone ? ` (UTC${photo.exif.timezone})` : ""}

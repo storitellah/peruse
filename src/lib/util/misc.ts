@@ -88,9 +88,19 @@ export async function mapPool<T, R>(
   return results;
 }
 
+// Still-image formats Peruse catalogs. HEIC/HEIF are the stills of Apple Live
+// Photos, so they're accepted here — the paired motion file is a video and is
+// rejected via VIDEO_EXTENSIONS below.
 export const IMAGE_EXTENSIONS = new Set([
   "jpg", "jpeg", "png", "heic", "heif", "webp",
   "tif", "tiff", "avif", "gif", "bmp", "dng",
+]);
+
+// Motion formats Peruse never ingests — including the .mov half of a Live Photo.
+// Detecting one next to a still is what flags that still as a Live Photo.
+export const VIDEO_EXTENSIONS = new Set([
+  "mov", "mp4", "m4v", "avi", "mkv", "webm", "hevc",
+  "3gp", "3g2", "mpg", "mpeg", "wmv", "flv", "m2ts", "mts",
 ]);
 
 export function extOf(name: string): string {

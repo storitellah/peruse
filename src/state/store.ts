@@ -20,9 +20,10 @@ import {
   toPhoto,
   supportsFsAccess,
 } from "../lib/fs/scanner";
+import { readBlob } from "../lib/fs/scanner";
 import { extractMetadata, normalizeDevice } from "../lib/exif/extract";
 import { reverseGeocode } from "../lib/geo/reverseGeocode";
-import { decodePhoto } from "../lib/thumbs/decode";
+import { decodeBlob } from "../lib/thumbs/decode";
 import { dHash } from "../lib/hash/phash";
 import { findDuplicates } from "../lib/hash/dedupe";
 import { writeSidecar } from "../lib/exif/xmpSidecar";
@@ -135,39 +136,58 @@ export const useStore = create<PeruseState>((set, get) => {
   onLoadStatus((s) => set({ aiStatus: s }));
 
   async function enrich(photos: Photo[]) {
-    // Stage 1: EXIF + reverse geocode (cheap, high concurrency).
-    await mapPool(photos, 8, async (p) => {
+    // One interleaved pass per photo, thumbnail-first. The previous design
+    // decoded no thumbnails until EXIF for the *entire* library had finished,
+    // so a big folder showed nothing for a long time. Here each photo opens its
+    // file once, paints its thumbnail immediately, then fills in hash + EXIF —
+    // so tiles start appearing within the first frames of a scan and the grid
+    // fills top-to-bottom as decoding proceeds.
+    const concurrency = Math.min(6, Math.max(3, navigator.hardwareConcurrency || 4));
+    await mapPool(photos, concurrency, async (p) => {
+      let blob: Blob;
       try {
-        const { exif, iptc } = await extractMetadata(p);
-        if (exif.gps) exif.place = reverseGeocode(exif.gps);
-        patchPhoto(set, get, p.id, {
-          exif,
-          iptc: { ...p.iptc, ...iptc, people: iptc.people ?? p.iptc.people, tags: iptc.tags ?? p.iptc.tags },
-          stage: "exif",
-        });
+        blob = await readBlob(p);
       } catch {
-        patchPhoto(set, get, p.id, { stage: "exif" });
+        patchPhoto(set, get, p.id, { stage: "ready" });
+        set((s) => ({ processed: s.processed + 1 }));
+        return;
       }
-      set((s) => ({ processed: s.processed + 1 }));
-    });
 
-    // Stage 2: decode thumbnail + perceptual hash (heavier, lower concurrency).
-    await mapPool(photos, 4, async (p) => {
+      // Size / mtime are read here (one file open) rather than during the scan.
+      const sizeBytes = "size" in blob ? (blob as File).size : p.sizeBytes;
+      const lastModified = "lastModified" in blob ? (blob as File).lastModified : p.lastModified;
+
+      // 1) Thumbnail + hash first — this is what the user sees.
       try {
-        const dec = await decodePhoto(p);
-        const cur = effective(get, p.id);
+        const dec = await decodeBlob(blob);
         patchPhoto(set, get, p.id, {
           thumbUrl: dec.thumbUrl,
           aspect: dec.aspect,
           phash: dHash(dec.grey),
-          // Merge decoded dimensions onto the EXIF built in stage 1 (which may
-          // still be sitting in the patch buffer), never over an empty object.
-          exif: { ...(cur?.exif ?? {}), width: dec.width, height: dec.height },
+          sizeBytes,
+          lastModified,
+          exif: { ...(effective(get, p.id)?.exif ?? {}), width: dec.width, height: dec.height },
+          stage: "thumb",
+        });
+      } catch {
+        patchPhoto(set, get, p.id, { sizeBytes, lastModified, stage: "thumb" });
+      }
+
+      // 2) EXIF + reverse geocode second — preserves the decoded dimensions.
+      try {
+        const { exif, iptc } = await extractMetadata(blob, lastModified);
+        if (exif.gps) exif.place = reverseGeocode(exif.gps);
+        const cur = effective(get, p.id);
+        patchPhoto(set, get, p.id, {
+          exif: { ...exif, width: cur?.exif?.width ?? exif.width, height: cur?.exif?.height ?? exif.height },
+          iptc: { ...p.iptc, ...iptc, people: iptc.people ?? p.iptc.people, tags: iptc.tags ?? p.iptc.tags },
           stage: "ready",
         });
       } catch {
         patchPhoto(set, get, p.id, { stage: "ready" });
       }
+
+      set((s) => ({ processed: s.processed + 1 }));
     });
 
     get().recomputeDuplicates();

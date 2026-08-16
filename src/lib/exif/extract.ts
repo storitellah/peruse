@@ -5,8 +5,7 @@
 // own ExifData / Iptc shapes so the rest of the app never touches raw tags.
 
 import exifr from "exifr";
-import type { ExifData, Iptc, Photo } from "../../types";
-import { readBlob } from "../fs/scanner";
+import type { ExifData, Iptc } from "../../types";
 
 interface RawExif {
   DateTimeOriginal?: Date | string;
@@ -51,9 +50,9 @@ function formatExposure(sec?: number): string | undefined {
 }
 
 export async function extractMetadata(
-  photo: Photo
+  blob: Blob,
+  fallbackTime: number
 ): Promise<{ exif: ExifData; iptc: Partial<Iptc> }> {
-  const blob = await readBlob(photo);
   let raw: RawExif = {};
   try {
     raw =
@@ -75,7 +74,7 @@ export async function extractMetadata(
   const height = raw.ExifImageHeight || raw.ImageHeight;
 
   const exif: ExifData = {
-    takenAt: toEpoch(raw.DateTimeOriginal) ?? toEpoch(raw.CreateDate) ?? photo.lastModified,
+    takenAt: toEpoch(raw.DateTimeOriginal) ?? toEpoch(raw.CreateDate) ?? fallbackTime,
     timezone: raw.OffsetTimeOriginal,
     make: cleanStr(raw.Make),
     model: cleanStr(raw.Model),

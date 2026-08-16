@@ -75,6 +75,9 @@ export interface Photo {
   ext: string;
   sizeBytes: number;
   lastModified: number;
+  /** True when a sibling motion file (e.g. .mov) makes this a Live Photo.
+   *  Peruse catalogs the still and ignores the paired video. */
+  isLivePhoto: boolean;
   /** Handle used to re-open the file lazily (undefined in fallback mode). */
   handle?: FileSystemFileHandle;
   /** Handle of the containing directory, for writing sidecars in place. */

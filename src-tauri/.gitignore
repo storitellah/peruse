@@ -1,0 +1,4 @@
+# Rust / Tauri build output
+/target
+/gen
+Cargo.lock

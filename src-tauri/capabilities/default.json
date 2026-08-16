@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimal core capabilities for the Peruse window. No filesystem, shell, http, or dialog plugins are granted — the native surface is intentionally tiny.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

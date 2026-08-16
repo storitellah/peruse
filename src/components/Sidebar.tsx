@@ -1,8 +1,9 @@
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useStore, canUseFsAccess } from "../state/store";
 import type { ActiveFilter } from "../state/store";
 import type { TabId } from "../types";
 import { Icon, type IconName } from "./Icon";
+import { BackupSheet } from "./BackupSheet";
 
 const NAV: { id: TabId; label: string; icon: IconName }[] = [
   { id: "library", label: "Library", icon: "photos" },
@@ -29,6 +30,8 @@ export function Sidebar() {
   const processed = useStore((s) => s.processed);
   const totalPhotos = useStore((s) => s.photos.length);
 
+  const backupFrequency = useStore((s) => s.backupFrequency);
+  const [backupOpen, setBackupOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   // Adding folders works whether or not the browser has the FS Access API.
   // With it we can re-open handles and write sidecars in place; without it we
@@ -179,6 +182,11 @@ export function Sidebar() {
                 : `Loading ${processed}/${totalPhotos}`}
             </div>
           )}
+          <button className="side-row sm add" onClick={() => setBackupOpen(true)}>
+            <Icon name="lock" size={15} />
+            <span>Backup catalog…</span>
+            {backupFrequency !== "off" && <span className="side-count">{backupFrequency}</span>}
+          </button>
           <input
             ref={inputRef}
             type="file"
@@ -194,6 +202,8 @@ export function Sidebar() {
           />
         </div>
       </div>
+
+      {backupOpen && <BackupSheet onClose={() => setBackupOpen(false)} />}
     </aside>
   );
 }

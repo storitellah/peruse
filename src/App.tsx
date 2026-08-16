@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useStore } from "./state/store";
 import { Sidebar } from "./components/Sidebar";
 import { TopBar } from "./components/TopBar";
@@ -16,6 +17,19 @@ export function App() {
   const activeTab = useStore((s) => s.activeTab);
   const inspectorOpen = useStore((s) => s.inspectorOpen);
   const selectedId = useStore((s) => s.selectedId);
+  const initBackup = useStore((s) => s.initBackup);
+  const maybeAutoBackup = useStore((s) => s.maybeAutoBackup);
+
+  // Load backup settings once, then poll the schedule. Auto-backup only fires
+  // when it's actually due and a destination folder was previously chosen.
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval>;
+    void initBackup().then(() => {
+      void maybeAutoBackup();
+      timer = setInterval(() => void maybeAutoBackup(), 15 * 60 * 1000);
+    });
+    return () => clearInterval(timer);
+  }, [initBackup, maybeAutoBackup]);
 
   if (!ingested) return <Welcome />;
 

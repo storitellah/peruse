@@ -737,17 +737,24 @@
 .attr-row:hover { background: var(--fill); }
 .attr-row:active { transform: scale(0.995); }
 .attr-thumb {
-  width: 48px;
-  height: 48px;
-  border-radius: 9px;
-  overflow: hidden;
+  width: 46px;
+  height: 46px;
+  border-radius: 11px;
   background: var(--fill);
   display: grid;
   place-items: center;
-  color: var(--text-3);
   flex: none;
 }
-.attr-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.attr-sample {
+  width: 46px;
+  height: 46px;
+  border-radius: 9px;
+  overflow: hidden;
+  background: var(--fill);
+  flex: none;
+  margin-left: -4px;
+}
+.attr-sample img { width: 100%; height: 100%; object-fit: cover; }
 .attr-info { flex: 1; min-width: 0; }
 .attr-name { font-size: 14px; font-weight: 550; }
 .attr-meta { font-size: 11.5px; color: var(--text-3); margin: 1px 0 6px; }
@@ -955,6 +962,59 @@
   border-top: 0.5px solid var(--hairline);
 }
 .sheet-note { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-3); }
+
+/* ---------- Backup panel ---------- */
+.backup-note {
+  display: flex;
+  gap: 9px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+  background: var(--fill);
+  border-radius: 10px;
+  padding: 11px 12px;
+}
+.backup-note svg { color: var(--accent); flex: none; margin-top: 1px; }
+.backup-note code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  background: var(--fill-strong);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.backup-field { margin-top: 18px; }
+.backup-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+  margin-bottom: 8px;
+}
+.seg-row { display: flex; gap: 8px; }
+.seg {
+  flex: 1;
+  border: 0.5px solid var(--hairline-strong);
+  background: var(--fill);
+  border-radius: 9px;
+  padding: 9px 10px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.seg span { font-size: 13px; font-weight: 600; color: var(--text); }
+.seg em { font-size: 10.5px; color: var(--text-3); font-style: normal; }
+.seg.active { background: var(--selection); border-color: transparent; }
+.seg.active span { color: var(--accent); }
+.backup-dest { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.backup-dest .btn-ghost { flex: none; }
+.backup-hint { font-size: 11.5px; color: var(--text-3); display: block; margin-top: 6px; }
+.backup-toggle { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--text); cursor: pointer; }
+.backup-toggle input { width: 16px; height: 16px; accent-color: var(--accent); }
+.backup-toggle + .insp-input { margin-top: 10px; }
+.backup-status { font-size: 12px; color: var(--text-2); margin-top: 16px; font-variant-numeric: tabular-nums; }
 
 /* ---------- Toasts ---------- */
 .toasts {

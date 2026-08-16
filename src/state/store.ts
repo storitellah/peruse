@@ -29,7 +29,15 @@ import { findDuplicates } from "../lib/hash/dedupe";
 import { writeSidecar } from "../lib/exif/xmpSidecar";
 import { analyzePhoto, encodeQuery, cosine, ensureClip, onLoadStatus, type LoadStatus } from "../lib/ai/vision";
 import { literalMatch, looksSemantic } from "../lib/search/query";
-import { mapPool } from "../lib/util/misc";
+import { mapPool, formatBytes } from "../lib/util/misc";
+import {
+  serializeCatalog,
+  packBackup,
+  unpackBackup,
+  backupFileName,
+  BackupError,
+} from "../lib/backup/catalog";
+import { saveBackupDir, loadBackupDir } from "../lib/backup/handleStore";
 
 export type ActiveFilter =
   | { kind: "none" }
@@ -67,6 +75,13 @@ interface PeruseState {
   aiRunning: boolean;
   aiProgress: number;
 
+  // Catalog backup
+  backupFrequency: BackupFrequency;
+  backupEncrypt: boolean;
+  lastBackupAt: number | null;
+  backupDirName: string | null;
+  backupBusy: boolean;
+
   toasts: Toast[];
 
   // actions
@@ -86,8 +101,64 @@ interface PeruseState {
   restore: (id: string) => void;
   runAiTagging: () => Promise<void>;
   recomputeDuplicates: () => void;
+  // backup
+  initBackup: () => Promise<void>;
+  setBackupFrequency: (f: BackupFrequency) => void;
+  setBackupEncrypt: (on: boolean) => void;
+  setSessionPassphrase: (p: string) => void;
+  chooseBackupFolder: () => Promise<void>;
+  backupNow: (passphrase?: string) => Promise<void>;
+  restoreBackup: (file: File, passphrase?: string) => Promise<void>;
+  maybeAutoBackup: () => Promise<void>;
   toast: (text: string) => void;
   dismissToast: (id: number) => void;
+}
+
+export type BackupFrequency = "off" | "daily" | "weekly";
+
+// Passphrase is held in memory for the session only — never written to disk,
+// never put in the store (so it can't leak via devtools state serialisation).
+let sessionPassphrase = "";
+
+const LS = {
+  freq: "peruse.backup.frequency",
+  enc: "peruse.backup.encrypt",
+  last: "peruse.backup.lastAt",
+  dir: "peruse.backup.dirName",
+};
+
+function lsGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function lsSet(key: string, val: string) {
+  try {
+    localStorage.setItem(key, val);
+  } catch {
+    /* private mode / disabled storage — settings just won't persist */
+  }
+}
+
+const FREQ_MS: Record<BackupFrequency, number> = {
+  off: Infinity,
+  daily: 24 * 60 * 60 * 1000,
+  weekly: 7 * 24 * 60 * 60 * 1000,
+};
+
+async function ensureDirWritable(dir: FileSystemDirectoryHandle): Promise<boolean> {
+  try {
+    if (!dir.queryPermission) return true;
+    let state = await dir.queryPermission({ mode: "readwrite" });
+    if (state !== "granted" && dir.requestPermission) {
+      state = await dir.requestPermission({ mode: "readwrite" });
+    }
+    return state === "granted";
+  } catch {
+    return false;
+  }
 }
 
 // --- batched patch buffer -------------------------------------------------
@@ -215,6 +286,12 @@ export const useStore = create<PeruseState>((set, get) => {
     aiStatus: { phase: "idle" },
     aiRunning: false,
     aiProgress: 0,
+
+    backupFrequency: "off",
+    backupEncrypt: false,
+    lastBackupAt: null,
+    backupDirName: null,
+    backupBusy: false,
 
     toasts: [],
 
@@ -351,6 +428,146 @@ export const useStore = create<PeruseState>((set, get) => {
 
     recomputeDuplicates: () => {
       set({ duplicateGroups: findDuplicates(get().photos) });
+    },
+
+    async initBackup() {
+      const freq = (lsGet(LS.freq) as BackupFrequency) || "off";
+      const enc = lsGet(LS.enc) === "1";
+      const lastStr = lsGet(LS.last);
+      const dir = await loadBackupDir();
+      set({
+        backupFrequency: freq === "daily" || freq === "weekly" ? freq : "off",
+        backupEncrypt: enc,
+        lastBackupAt: lastStr ? Number(lastStr) : null,
+        backupDirName: dir?.name ?? lsGet(LS.dir),
+      });
+    },
+
+    setBackupFrequency: (f) => {
+      lsSet(LS.freq, f);
+      set({ backupFrequency: f });
+      void get().maybeAutoBackup();
+    },
+
+    setBackupEncrypt: (on) => {
+      lsSet(LS.enc, on ? "1" : "0");
+      set({ backupEncrypt: on });
+    },
+
+    setSessionPassphrase: (p) => {
+      sessionPassphrase = p;
+    },
+
+    async chooseBackupFolder() {
+      if (!supportsFsAccess() || !window.showDirectoryPicker) {
+        get().toast("Folder backups need a Chromium browser or the desktop app");
+        return;
+      }
+      try {
+        const dir = await window.showDirectoryPicker({ id: "peruse-backup", mode: "readwrite" });
+        await ensureDirWritable(dir);
+        await saveBackupDir(dir);
+        lsSet(LS.dir, dir.name);
+        set({ backupDirName: dir.name });
+        get().toast(`Backups will be saved to “${dir.name}”`);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        get().toast("Could not set backup folder");
+      }
+    },
+
+    async backupNow(passphrase) {
+      if (get().backupBusy) return;
+      const photos = get().photos;
+      if (!photos.length) {
+        get().toast("Nothing to back up yet");
+        return;
+      }
+      const pass = get().backupEncrypt ? passphrase ?? sessionPassphrase : undefined;
+      if (get().backupEncrypt && !pass) {
+        get().toast("Enter a passphrase to encrypt the backup");
+        return;
+      }
+      set({ backupBusy: true });
+      try {
+        const snapshot = serializeCatalog(photos);
+        const bytes = await packBackup(snapshot, pass);
+        const fileName = backupFileName();
+        const dir = await loadBackupDir();
+
+        if (dir && (await ensureDirWritable(dir))) {
+          const handle = await dir.getFileHandle(fileName, { create: true });
+          const writable = await handle.createWritable();
+          await writable.write(bytes);
+          await writable.close();
+          get().toast(`Backed up ${snapshot.count} photos → ${fileName} (${formatBytes(bytes.byteLength)})`);
+        } else {
+          const blob = new Blob([bytes], { type: "application/octet-stream" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = fileName;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 4000);
+          get().toast(`Backup ready (${formatBytes(bytes.byteLength)}) — saved to Downloads`);
+        }
+        const now = Date.now();
+        lsSet(LS.last, String(now));
+        set({ lastBackupAt: now });
+      } catch (err) {
+        get().toast(err instanceof Error ? err.message : "Backup failed");
+      } finally {
+        set({ backupBusy: false });
+      }
+    },
+
+    async restoreBackup(file, passphrase) {
+      set({ backupBusy: true });
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const snap = await unpackBackup(bytes, passphrase ?? (sessionPassphrase || undefined));
+        const byPath = new Map(snap.photos.map((r) => [r.relPath, r]));
+        let matched = 0;
+        set((s) => ({
+          photos: s.photos.map((p) => {
+            const r = byPath.get(p.relPath);
+            if (!r) return p;
+            matched += 1;
+            return {
+              ...p,
+              iptc: { ...p.iptc, ...r.iptc },
+              softDeleted: r.softDeleted,
+              aiTags: p.aiTags.length ? p.aiTags : r.aiTags,
+              phash: p.phash ?? r.phash,
+            };
+          }),
+        }));
+        get().recomputeDuplicates();
+        get().toast(
+          matched
+            ? `Restored metadata for ${matched} of ${snap.count} cataloged photos`
+            : `Read ${snap.count} records — load the matching folder to re-apply them`
+        );
+      } catch (err) {
+        const msg = err instanceof BackupError ? err.message : "Could not read that backup";
+        get().toast(msg);
+      } finally {
+        set({ backupBusy: false });
+      }
+    },
+
+    async maybeAutoBackup() {
+      const { backupFrequency, backupEncrypt, lastBackupAt, photos } = get();
+      if (backupFrequency === "off" || !photos.length) return;
+      const due = !lastBackupAt || Date.now() - lastBackupAt >= FREQ_MS[backupFrequency];
+      if (!due) return;
+      const dir = await loadBackupDir();
+      if (!dir) return; // no destination chosen; the Backup panel prompts for one
+      if (backupEncrypt && !sessionPassphrase) {
+        get().toast("Auto-backup is due — open Backup to enter your passphrase");
+        return;
+      }
+      await get().backupNow();
     },
 
     toast: (text) => {

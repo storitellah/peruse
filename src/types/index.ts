@@ -122,8 +122,6 @@ export type TabId =
   | "thisDay"
   | "attributes"
   | "duplicates"
-  | "places"
-  | "themes"
   | "settings";
 
 export type Theme = "system" | "light" | "dark";

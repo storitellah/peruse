@@ -25,7 +25,8 @@ import { readBlob } from "../lib/fs/scanner";
 import { extractMetadata, normalizeDevice } from "../lib/exif/extract";
 import { reverseGeocode } from "../lib/geo/reverseGeocode";
 import { ensureBorders } from "../lib/geo/borders";
-import { decodeBlob } from "../lib/thumbs/decode";
+import { decodeThumb } from "../lib/thumbs/decode";
+import { getThumb, putThumb, thumbKey } from "../lib/thumbs/cache";
 import { dHash } from "../lib/hash/phash";
 import { findDuplicates } from "../lib/hash/dedupe";
 import { writeSidecar } from "../lib/exif/xmpSidecar";
@@ -287,7 +288,46 @@ export const useStore = create<PeruseState>((set, get) => {
     });
   }
 
+  function applyThumb(p: Photo, url: string, width: number, height: number, aspect: number, phash: string) {
+    const cur = effective(get, p.id);
+    patchPhoto(set, get, p.id, {
+      thumbUrl: url,
+      aspect: cur?.exif?.width && cur?.exif?.height ? cur.aspect : aspect,
+      phash: p.phash ?? phash,
+      exif: {
+        ...(cur?.exif ?? {}),
+        width: cur?.exif?.width ?? width,
+        height: cur?.exif?.height ?? height,
+      },
+    });
+    decodedOrder.push(p.id);
+    while (decodedOrder.length > THUMB_CAP) {
+      const old = decodedOrder.shift()!;
+      if (old === p.id) continue;
+      const op = get().photos.find((x) => x.id === old);
+      if (op?.thumbUrl) {
+        try {
+          URL.revokeObjectURL(op.thumbUrl);
+        } catch {
+          /* already revoked */
+        }
+        patchPhoto(set, get, old, { thumbUrl: undefined });
+      }
+    }
+  }
+
   async function decodeOne(p: Photo) {
+    const key = thumbKey(p);
+
+    // 1) Persistent cache — instant, no decode. This is what makes re-scrolls
+    //    and app relaunches feel immediate.
+    const cached = await getThumb(key);
+    if (cached) {
+      applyThumb(p, URL.createObjectURL(cached.blob), cached.width, cached.height, cached.aspect, cached.phash);
+      return;
+    }
+
+    // 2) Decode off the main thread (Worker pool), then cache for next time.
     let blob: Blob;
     try {
       blob = await readBlob(p);
@@ -296,32 +336,18 @@ export const useStore = create<PeruseState>((set, get) => {
       return;
     }
     try {
-      const dec = await decodeBlob(blob);
-      const cur = effective(get, p.id);
-      patchPhoto(set, get, p.id, {
-        thumbUrl: dec.thumbUrl,
-        aspect: cur?.exif?.width && cur?.exif?.height ? cur.aspect : dec.aspect,
-        phash: p.phash ?? dHash(dec.grey),
-        exif: {
-          ...(cur?.exif ?? {}),
-          width: cur?.exif?.width ?? dec.width,
-          height: cur?.exif?.height ?? dec.height,
-        },
+      const dec = await decodeThumb(blob);
+      const phash = dHash(dec.grey);
+      applyThumb(p, URL.createObjectURL(dec.thumbBlob), dec.width, dec.height, dec.aspect, phash);
+      void putThumb({
+        key,
+        blob: dec.thumbBlob,
+        width: dec.width,
+        height: dec.height,
+        aspect: dec.aspect,
+        phash,
+        ts: Date.now(),
       });
-      decodedOrder.push(p.id);
-      while (decodedOrder.length > THUMB_CAP) {
-        const old = decodedOrder.shift()!;
-        if (old === p.id) continue;
-        const op = get().photos.find((x) => x.id === old);
-        if (op?.thumbUrl) {
-          try {
-            URL.revokeObjectURL(op.thumbUrl);
-          } catch {
-            /* already revoked */
-          }
-          patchPhoto(set, get, old, { thumbUrl: undefined });
-        }
-      }
     } catch {
       thumbFailed.add(p.id); // e.g. a RAW/HEIC the browser can't decode
     }
@@ -519,7 +545,12 @@ export const useStore = create<PeruseState>((set, get) => {
     requestThumb: (id) => {
       const p = get().photos.find((x) => x.id === id);
       if (!p || p.softDeleted || p.thumbUrl || decodingSet.has(id) || thumbFailed.has(id)) return;
-      if (!thumbQueue.includes(id)) thumbQueue.push(id);
+      // LIFO: the most recently requested tiles are the ones on screen right
+      // now, so decode those first when the user scrolls fast.
+      const at = thumbQueue.indexOf(id);
+      if (at !== -1) thumbQueue.splice(at, 1);
+      thumbQueue.unshift(id);
+      if (thumbQueue.length > 600) thumbQueue.length = 600; // drop stale off-screen requests
       pumpThumbs();
     },
 
@@ -535,14 +566,26 @@ export const useStore = create<PeruseState>((set, get) => {
       // Decode small + hash only (thumbnail is a bonus if it fits the cache).
       await mapPool(targets, THUMB_CONCURRENCY, async (p) => {
         try {
-          const blob = await readBlob(p);
-          const dec = await decodeBlob(blob);
-          patchPhoto(set, get, p.id, { phash: dHash(dec.grey) });
-          // Don't hold every thumbnail from a full-library scan in memory.
-          try {
-            URL.revokeObjectURL(dec.thumbUrl);
-          } catch {
-            /* noop */
+          const key = thumbKey(p);
+          // Reuse a cached hash/thumbnail if we already have one — no re-decode.
+          const cached = await getThumb(key);
+          if (cached?.phash) {
+            patchPhoto(set, get, p.id, { phash: cached.phash });
+          } else {
+            const blob = await readBlob(p);
+            const dec = await decodeThumb(blob);
+            const phash = dHash(dec.grey);
+            patchPhoto(set, get, p.id, { phash });
+            // Warm the cache so viewing these later is instant.
+            void putThumb({
+              key,
+              blob: dec.thumbBlob,
+              width: dec.width,
+              height: dec.height,
+              aspect: dec.aspect,
+              phash,
+              ts: Date.now(),
+            });
           }
         } catch {
           /* undecodable — skip */

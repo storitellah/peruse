@@ -34,12 +34,35 @@ export function findDuplicates(
 
   for (const p of hashed) parent.set(p.id, p.id);
 
-  // O(n^2) pairwise — fine for personal libraries; bucketed for large ones
-  // would prefix-index the hashes. Kept simple and correct here.
-  for (let i = 0; i < hashed.length; i++) {
-    for (let j = i + 1; j < hashed.length; j++) {
-      if (hamming(hashed[i].phash!, hashed[j].phash!) <= threshold) {
-        union(hashed[i].id, hashed[j].id);
+  // Banded LSH so this scales to 100k+ photos instead of O(n^2).
+  // Split each 64-bit hash (16 hex chars) into 4 bands of 4 hex chars. Two
+  // near-identical images agree on at least one band with very high
+  // probability, so we only ever compare within a band bucket, then verify the
+  // real Hamming distance. Near-linear in practice.
+  const BANDS = 4;
+  const BAND_LEN = 4; // hex chars per band (16 bits)
+  const buckets = new Map<string, Photo[]>();
+  for (const p of hashed) {
+    const h = p.phash!;
+    for (let b = 0; b < BANDS; b++) {
+      const key = b + ":" + h.slice(b * BAND_LEN, b * BAND_LEN + BAND_LEN);
+      const list = buckets.get(key);
+      if (list) list.push(p);
+      else buckets.set(key, [p]);
+    }
+  }
+
+  for (const list of buckets.values()) {
+    if (list.length < 2) continue;
+    // Cap oversized buckets (e.g. many identical solid-colour frames) so a
+    // pathological bucket can't reintroduce O(n^2) blow-up.
+    const n = Math.min(list.length, 400);
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        if (find(list[i].id) === find(list[j].id)) continue;
+        if (hamming(list[i].phash!, list[j].phash!) <= threshold) {
+          union(list[i].id, list[j].id);
+        }
       }
     }
   }

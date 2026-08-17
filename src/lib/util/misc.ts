@@ -88,9 +88,38 @@ export async function mapPool<T, R>(
   return results;
 }
 
+// Still-image formats Peruse catalogs, including the common camera RAW formats.
+// HEIC/HEIF are the stills of Apple Live Photos, so they're accepted here — the
+// paired motion file is a video and is rejected via VIDEO_EXTENSIONS below.
 export const IMAGE_EXTENSIONS = new Set([
-  "jpg", "jpeg", "png", "heic", "heif", "webp",
-  "tif", "tiff", "avif", "gif", "bmp", "dng",
+  // Standard
+  "jpg", "jpeg", "jpe", "jfif", "png", "heic", "heif", "webp",
+  "tif", "tiff", "avif", "gif", "bmp",
+  // RAW (camera manufacturers)
+  "dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2",
+  "raf", "orf", "rw2", "raw", "rwl", "pef", "srw", "x3f", "3fr",
+  "erf", "kdc", "dcr", "mos", "mrw", "iiq",
+]);
+
+// Camera RAW formats — decoded thumbnails usually can't render in a browser,
+// but EXIF still extracts. Tracked so the UI can label them.
+export const RAW_EXTENSIONS = new Set([
+  "dng", "cr2", "cr3", "crw", "nef", "nrw", "arw", "srf", "sr2",
+  "raf", "orf", "rw2", "raw", "rwl", "pef", "srw", "x3f", "3fr",
+  "erf", "kdc", "dcr", "mos", "mrw", "iiq",
+]);
+
+/** A file is a screenshot if its name says so (case/spacing tolerant):
+ *  "screenshot", "Screen Shot", "screen-capture", "Screenshot_2024", etc. */
+export function isScreenshotName(name: string): boolean {
+  return /screen[\s._-]?(shot|capture)|\bscrnshot\b/i.test(name);
+}
+
+// Motion formats Peruse never ingests — including the .mov half of a Live Photo.
+// Detecting one next to a still is what flags that still as a Live Photo.
+export const VIDEO_EXTENSIONS = new Set([
+  "mov", "mp4", "m4v", "avi", "mkv", "webm", "hevc",
+  "3gp", "3g2", "mpg", "mpeg", "wmv", "flv", "m2ts", "mts",
 ]);
 
 export function extOf(name: string): string {

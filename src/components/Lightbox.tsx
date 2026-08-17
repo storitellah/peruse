@@ -88,19 +88,39 @@ export function Lightbox() {
           {index + 1} / {visible.length}
         </span>
         <div className="lb-tools">
-          <button className={`icon-btn light ${showInfo ? "on" : ""}`} onClick={() => setShowInfo((v) => !v)} title="Info (i)">
-            <Icon name="info" size={18} />
-          </button>
           <button className="icon-btn light" onClick={() => openLightbox(null)} title="Close (Esc)">
             <Icon name="close" size={18} />
           </button>
         </div>
       </div>
 
-      <button className="lb-nav left" onClick={(e) => { e.stopPropagation(); go(-1); }} aria-label="Previous">
+      {/* Side Details button — appears during full preview, opens the panel. */}
+      {!showInfo && (
+        <button
+          className="lb-details-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            setShowInfo(true);
+          }}
+          title="View details (i)"
+        >
+          <Icon name="info" size={16} />
+          <span>Details</span>
+        </button>
+      )}
+
+      <button
+        className={`lb-nav left`}
+        onClick={(e) => { e.stopPropagation(); go(-1); }}
+        aria-label="Previous"
+      >
         <Icon name="chevronLeft" size={26} />
       </button>
-      <button className="lb-nav right" onClick={(e) => { e.stopPropagation(); go(1); }} aria-label="Next">
+      <button
+        className={`lb-nav right ${showInfo ? "shifted" : ""}`}
+        onClick={(e) => { e.stopPropagation(); go(1); }}
+        aria-label="Next"
+      >
         <Icon name="chevronRight" size={26} />
       </button>
 
@@ -118,31 +138,60 @@ export function Lightbox() {
       </div>
 
       {showInfo && (
-        <div className="lb-info" onClick={(e) => e.stopPropagation()}>
-          <div className="lb-info-name">{photo.name}</div>
-          <div className="lb-info-sub">{formatDateTime(photo.exif.takenAt)}</div>
-          <div className="lb-info-grid">
-            <span>{deviceLabel(photo)}</span>
-            {photo.exif.width && <span>{photo.exif.width} × {photo.exif.height}</span>}
-            {photo.exif.fNumber && <span>ƒ/{photo.exif.fNumber}</span>}
-            {photo.exif.exposureTime && <span>{photo.exif.exposureTime}</span>}
-            {photo.exif.iso && <span>ISO {photo.exif.iso}</span>}
-            {photo.exif.focalLength && <span>{photo.exif.focalLength} mm</span>}
+        <aside className="lb-details" onClick={(e) => e.stopPropagation()}>
+          <div className="lb-details-head">
+            <span>Details</span>
+            <button className="icon-btn light" onClick={() => setShowInfo(false)} aria-label="Hide details">
+              <Icon name="close" size={16} />
+            </button>
           </div>
-          {photo.exif.place && (
-            <div className="lb-info-loc">
-              <Icon name="location" size={13} />
-              {[photo.exif.place.city, photo.exif.place.country].filter(Boolean).join(", ")}
+          <div className="lb-details-body">
+            <div className="lb-info-name">{photo.name}</div>
+            <div className="lb-info-sub">{formatDateTime(photo.exif.takenAt)}</div>
+
+            <div className="lb-detail-row">
+              <Icon name="device" size={14} />
+              <span>{deviceLabel(photo)}</span>
             </div>
-          )}
-          {photo.aiTags.length > 0 && (
-            <div className="chips">
-              {photo.aiTags.map((t) => (
-                <span className="chip ai" key={t.label}>{t.label}</span>
-              ))}
+            {photo.exif.place && (
+              <div className="lb-detail-row">
+                <Icon name="location" size={14} />
+                <span>{[photo.exif.place.city, photo.exif.place.region, photo.exif.place.country].filter(Boolean).join(", ")}</span>
+              </div>
+            )}
+
+            <div className="lb-info-grid">
+              {photo.exif.width && <span>{photo.exif.width} × {photo.exif.height}</span>}
+              {photo.exif.fNumber && <span>ƒ/{photo.exif.fNumber}</span>}
+              {photo.exif.exposureTime && <span>{photo.exif.exposureTime}</span>}
+              {photo.exif.iso && <span>ISO {photo.exif.iso}</span>}
+              {photo.exif.focalLength && <span>{photo.exif.focalLength} mm</span>}
+              {photo.exif.lensModel && <span>{photo.exif.lensModel}</span>}
             </div>
-          )}
-        </div>
+
+            {photo.iptc.caption && <p className="lb-detail-caption">{photo.iptc.caption}</p>}
+
+            {(photo.aiTags.length > 0 || photo.iptc.tags.length > 0 || photo.iptc.people.length > 0) && (
+              <div className="chips">
+                {photo.iptc.people.map((p) => (
+                  <span className="chip" key={"p" + p}>{p}</span>
+                ))}
+                {photo.iptc.tags.map((t) => (
+                  <span className="chip" key={"t" + t}>{t}</span>
+                ))}
+                {photo.aiTags.map((t) => (
+                  <span className="chip ai" key={t.label}>{t.label}</span>
+                ))}
+              </div>
+            )}
+
+            <div className="lb-detail-flags">
+              {photo.isLivePhoto && <span className="insp-live"><span className="live-dot" /> LIVE</span>}
+              {photo.isRaw && <span className="lb-flag">{photo.ext.toUpperCase()}</span>}
+              {photo.isScreenshot && <span className="lb-flag">SCREENSHOT</span>}
+            </div>
+          </div>
+        </aside>
       )}
     </div>
   );

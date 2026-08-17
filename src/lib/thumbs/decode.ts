@@ -6,9 +6,6 @@
 //   - a tiny greyscale pixel buffer reused by the perceptual-hash stage.
 // The full-resolution pixels are never retained; only the downscaled result.
 
-import type { Photo } from "../../types";
-import { readBlob } from "../fs/scanner";
-
 export interface DecodeResult {
   thumbUrl: string;
   width: number;
@@ -48,28 +45,44 @@ async function toBlob(canvas: OffscreenCanvas | HTMLCanvasElement): Promise<Blob
   });
 }
 
-export async function decodePhoto(photo: Photo): Promise<DecodeResult> {
-  const blob = await readBlob(photo);
+export async function decodeBlob(blob: Blob): Promise<DecodeResult> {
+  // Ask the decoder to downscale during decode: for a 12 MP phone photo this
+  // produces a ~512 px bitmap directly instead of rasterising the full frame
+  // and shrinking it afterwards — dramatically less work and memory per image,
+  // which is what makes thumbnails appear quickly.
   let bitmap: ImageBitmap;
+  const opts: ImageBitmapOptions = {
+    imageOrientation: "from-image",
+    resizeWidth: THUMB_MAX,
+    resizeHeight: THUMB_MAX,
+    resizeQuality: "medium",
+  };
   try {
-    bitmap = await createImageBitmap(blob, { imageOrientation: "from-image" });
+    // Probe true dimensions cheaply first so we can preserve aspect ratio.
+    const probe = await createImageBitmap(blob);
+    const w0 = probe.width;
+    const h0 = probe.height;
+    const scale = Math.min(1, THUMB_MAX / Math.max(w0, h0));
+    opts.resizeWidth = Math.max(1, Math.round(w0 * scale));
+    opts.resizeHeight = Math.max(1, Math.round(h0 * scale));
+    probe.close?.();
+    bitmap = await createImageBitmap(blob, opts);
+    return await rasterise(bitmap, w0, h0);
   } catch {
-    // Some formats (e.g. HEIC) may not decode in every browser. Fall back to a
-    // plain decode without orientation handling.
+    // Some formats (e.g. HEIC) may not decode in every browser; last-ditch try.
     bitmap = await createImageBitmap(blob);
+    return await rasterise(bitmap, bitmap.width, bitmap.height);
   }
+}
 
-  const w0 = bitmap.width;
-  const h0 = bitmap.height;
+async function rasterise(bitmap: ImageBitmap, w0: number, h0: number): Promise<DecodeResult> {
   const aspect = w0 / h0 || 1;
-
-  const scale = Math.min(1, THUMB_MAX / Math.max(w0, h0));
-  const tw = Math.max(1, Math.round(w0 * scale));
-  const th = Math.max(1, Math.round(h0 * scale));
+  const tw = bitmap.width;
+  const th = bitmap.height;
 
   const { canvas, ctx } = getCanvas(tw, th);
   ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
+  ctx.imageSmoothingQuality = "medium";
   ctx.drawImage(bitmap, 0, 0, tw, th);
   const thumbBlob = await toBlob(canvas);
   const thumbUrl = URL.createObjectURL(thumbBlob);

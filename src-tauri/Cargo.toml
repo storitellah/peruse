@@ -1,0 +1,33 @@
+[package]
+name = "peruse"
+version = "0.1.0"
+description = "Local-first, privacy-focused photo cataloging"
+authors = ["Peruse"]
+license = "MIT"
+repository = "https://github.com/storitellah/peruse"
+edition = "2021"
+rust-version = "1.77"
+
+# The library the Tauri app binary links against.
+[lib]
+name = "peruse_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# Enabled by tauri when building the final app; keeps the webview strict.
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

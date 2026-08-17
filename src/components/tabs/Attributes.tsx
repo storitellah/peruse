@@ -1,10 +1,14 @@
 import { useMemo } from "react";
 import { useStore, deviceLabel } from "../../state/store";
 import { Icon } from "../Icon";
+import { DeviceGlyph } from "../DeviceGlyph";
+import { classifyDevice, type DeviceClass } from "../../lib/devices/classify";
 
 interface DeviceStat {
   device: string;
   make: string;
+  model: string;
+  cls: DeviceClass;
   count: number;
   first?: number;
   last?: number;
@@ -25,6 +29,8 @@ export function Attributes() {
       const s = map.get(device) ?? {
         device,
         make: p.exif.make ?? "",
+        model: p.exif.model ?? "",
+        cls: classifyDevice(p.exif.make, p.exif.model),
         count: 0,
       };
       s.count += 1;
@@ -77,9 +83,14 @@ export function Attributes() {
                 setFilter({ kind: "device", value: s.device });
               }}
             >
-              <div className="attr-thumb">
-                {s.sampleThumb ? <img src={s.sampleThumb} alt="" /> : <Icon name="device" size={20} />}
+              <div className="attr-thumb" style={{ color: s.cls.color }}>
+                <DeviceGlyph kind={s.cls.kind} size={26} />
               </div>
+              {s.sampleThumb && (
+                <div className="attr-sample">
+                  <img src={s.sampleThumb} alt="" />
+                </div>
+              )}
               <div className="attr-info">
                 <div className="attr-name">{s.device}</div>
                 <div className="attr-meta">{years}</div>

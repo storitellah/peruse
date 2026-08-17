@@ -10,7 +10,15 @@
 // only walks the tree the user explicitly granted.
 
 import type { Photo } from "../../types";
-import { IMAGE_EXTENSIONS, extOf, makeId } from "../util/misc";
+import {
+  IMAGE_EXTENSIONS,
+  VIDEO_EXTENSIONS,
+  RAW_EXTENSIONS,
+  isScreenshotName,
+  baseName,
+  extOf,
+  makeId,
+} from "../util/misc";
 
 export interface ScannedFile {
   name: string;
@@ -18,6 +26,9 @@ export interface ScannedFile {
   ext: string;
   sizeBytes: number;
   lastModified: number;
+  isLivePhoto: boolean;
+  isScreenshot: boolean;
+  isRaw: boolean;
   handle?: FileSystemFileHandle;
   dirHandle?: FileSystemDirectoryHandle;
   file?: File;
@@ -44,52 +55,83 @@ async function walk(
   out: ScannedFile[],
   onProgress?: (found: number) => void
 ): Promise<void> {
+  // Collect this directory's entries first so we can spot Live Photo pairs
+  // (a still + a sibling motion file sharing the same base name). We do NOT
+  // call getFile() here — opening every file just to read its size makes
+  // scanning a large library crawl. Size/mtime are read once, later, when the
+  // file is actually decoded.
+  const images: { name: string; handle: FileSystemFileHandle }[] = [];
+  const videoStems = new Set<string>();
+  const subdirs: FileSystemDirectoryHandle[] = [];
+
   for await (const entry of dir.values()) {
     if (entry.kind === "directory") {
-      // Skip Peruse's own sidecar/cache folders and hidden dirs.
-      if (entry.name.startsWith(".")) continue;
-      await walk(entry as FileSystemDirectoryHandle, `${prefix}${entry.name}/`, out, onProgress);
-    } else {
-      const ext = extOf(entry.name);
-      if (!IMAGE_EXTENSIONS.has(ext)) continue;
-      const fileHandle = entry as FileSystemFileHandle;
-      let sizeBytes = 0;
-      let lastModified = Date.now();
-      try {
-        const f = await fileHandle.getFile();
-        sizeBytes = f.size;
-        lastModified = f.lastModified;
-      } catch {
-        /* permission or read hiccup — keep the entry, size unknown */
-      }
-      out.push({
-        name: entry.name,
-        relPath: `${prefix}${entry.name}`,
-        ext,
-        sizeBytes,
-        lastModified,
-        handle: fileHandle,
-        dirHandle: dir,
-      });
-      onProgress?.(out.length);
+      if (entry.name.startsWith(".")) continue; // hidden / cache dirs
+      subdirs.push(entry as FileSystemDirectoryHandle);
+      continue;
     }
+    const ext = extOf(entry.name);
+    if (VIDEO_EXTENSIONS.has(ext)) {
+      videoStems.add(baseName(entry.name).toLowerCase());
+      continue; // videos are never ingested
+    }
+    if (IMAGE_EXTENSIONS.has(ext)) {
+      images.push({ name: entry.name, handle: entry as FileSystemFileHandle });
+    }
+  }
+
+  for (const img of images) {
+    const ext = extOf(img.name);
+    out.push({
+      name: img.name,
+      relPath: `${prefix}${img.name}`,
+      ext,
+      sizeBytes: 0,
+      lastModified: 0,
+      isLivePhoto: videoStems.has(baseName(img.name).toLowerCase()),
+      isScreenshot: isScreenshotName(img.name),
+      isRaw: RAW_EXTENSIONS.has(ext),
+      handle: img.handle,
+      dirHandle: dir,
+    });
+    onProgress?.(out.length);
+  }
+
+  for (const sub of subdirs) {
+    await walk(sub, `${prefix}${sub.name}/`, out, onProgress);
   }
 }
 
 /** Convert a fallback <input webkitdirectory> FileList into ScannedFiles. */
 export function scanFileList(files: FileList | File[]): ScannedFile[] {
-  const out: ScannedFile[] = [];
   const arr = Array.from(files);
+  const relOf = (f: File) =>
+    (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name;
+
+  // Index motion files by "<dir>/<stem>" so we can pair Live Photos.
+  const videoKeys = new Set<string>();
+  const dirOf = (rel: string) => rel.slice(0, rel.lastIndexOf("/") + 1);
+  for (const f of arr) {
+    if (VIDEO_EXTENSIONS.has(extOf(f.name))) {
+      const rel = relOf(f);
+      videoKeys.add(dirOf(rel) + baseName(f.name).toLowerCase());
+    }
+  }
+
+  const out: ScannedFile[] = [];
   for (const file of arr) {
     const ext = extOf(file.name);
-    if (!IMAGE_EXTENSIONS.has(ext)) continue;
-    const relPath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+    if (!IMAGE_EXTENSIONS.has(ext)) continue; // rejects video and everything else
+    const relPath = relOf(file);
     out.push({
       name: file.name,
       relPath,
       ext,
       sizeBytes: file.size,
       lastModified: file.lastModified,
+      isLivePhoto: videoKeys.has(dirOf(relPath) + baseName(file.name).toLowerCase()),
+      isScreenshot: isScreenshotName(file.name),
+      isRaw: RAW_EXTENSIONS.has(ext),
       file,
     });
   }
@@ -105,6 +147,9 @@ export function toPhoto(sf: ScannedFile): Photo {
     ext: sf.ext,
     sizeBytes: sf.sizeBytes,
     lastModified: sf.lastModified,
+    isLivePhoto: sf.isLivePhoto,
+    isScreenshot: sf.isScreenshot,
+    isRaw: sf.isRaw,
     handle: sf.handle,
     dirHandle: sf.dirHandle,
     file: sf.file,

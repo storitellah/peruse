@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { useStore } from "../../state/store";
 import { Icon } from "../Icon";
 import { formatBytes } from "../../lib/util/misc";
@@ -12,6 +12,12 @@ export function Duplicates() {
   const select = useStore((s) => s.select);
   const openLightbox = useStore((s) => s.openLightbox);
   const toast = useStore((s) => s.toast);
+  const requestThumb = useStore((s) => s.requestThumb);
+  const scanDuplicates = useStore((s) => s.scanDuplicates);
+  const dupScanning = useStore((s) => s.dupScanning);
+  const dupScanProgress = useStore((s) => s.dupScanProgress);
+  const hashedCount = useStore((s) => s.photos.filter((p) => p.phash && !p.softDeleted).length);
+  const totalCount = useStore((s) => s.photos.filter((p) => !p.softDeleted).length);
 
   const byId = useMemo(() => {
     const m = new Map<string, Photo>();
@@ -32,9 +38,16 @@ export function Duplicates() {
     [liveGroups]
   );
 
+  // Thumbnails decode lazily, so make sure the ones shown in dup groups load.
+  useEffect(() => {
+    for (const g of liveGroups) for (const p of g.live) if (!p.thumbUrl) requestThumb(p.id);
+  }, [liveGroups, requestThumb]);
+
   const keepBest = (photoIds: Photo[]) => {
     photoIds.slice(1).forEach((p) => softDelete(p.id));
   };
+
+  const unhashed = totalCount - hashedCount;
 
   const keepAll = () => {
     let removed = 0;
@@ -51,7 +64,20 @@ export function Duplicates() {
     return (
       <div className="empty-state">
         <Icon name="layers" size={38} strokeWidth={1.3} />
-        <p>No duplicates or burst shots detected. Your library is tidy.</p>
+        {unhashed > 0 ? (
+          <>
+            <p>
+              Scan your library to find duplicates and burst shots.
+              {hashedCount > 0 ? ` ${hashedCount.toLocaleString()} of ${totalCount.toLocaleString()} checked so far.` : ""}
+            </p>
+            <button className="btn-primary" disabled={dupScanning} onClick={() => void scanDuplicates()}>
+              <Icon name="layers" size={15} />
+              {dupScanning ? `Scanning… ${dupScanProgress}%` : `Scan ${unhashed.toLocaleString()} photos`}
+            </button>
+          </>
+        ) : (
+          <p>No duplicates or burst shots detected. Your library is tidy.</p>
+        )}
       </div>
     );
   }
@@ -63,9 +89,17 @@ export function Duplicates() {
           <div className="dup-count">{liveGroups.length} groups</div>
           <div className="dup-sub">~{formatBytes(reclaimable)} reclaimable by keeping the best of each</div>
         </div>
-        <button className="btn-primary" onClick={keepAll}>
-          <Icon name="sparkles" size={14} /> Keep best of all
-        </button>
+        <div className="dup-head-actions">
+          {unhashed > 0 && (
+            <button className="btn-ghost" disabled={dupScanning} onClick={() => void scanDuplicates()}>
+              <Icon name="layers" size={14} />
+              {dupScanning ? `Scanning ${dupScanProgress}%` : `Scan ${unhashed.toLocaleString()} more`}
+            </button>
+          )}
+          <button className="btn-primary" onClick={keepAll}>
+            <Icon name="sparkles" size={14} /> Keep best of all
+          </button>
+        </div>
       </div>
 
       {liveGroups.map((g) => (

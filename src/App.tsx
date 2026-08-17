@@ -10,7 +10,6 @@ import { Toasts } from "./components/Toasts";
 import { ThisDay } from "./components/tabs/ThisDay";
 import { Attributes } from "./components/tabs/Attributes";
 import { Duplicates } from "./components/tabs/Duplicates";
-import { ThemesPlaces } from "./components/tabs/ThemesPlaces";
 import { Settings } from "./components/tabs/Settings";
 
 export function App() {
@@ -50,7 +49,6 @@ export function App() {
           {activeTab === "thisDay" && <ThisDay />}
           {activeTab === "attributes" && <Attributes />}
           {activeTab === "duplicates" && <Duplicates />}
-          {(activeTab === "places" || activeTab === "themes") && <ThemesPlaces />}
           {activeTab === "settings" && <Settings />}
         </div>
       </div>

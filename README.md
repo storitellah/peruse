@@ -4,8 +4,8 @@
 
 <br/>
 
-[![Live](https://img.shields.io/badge/Try_it-peruse.pages.dev-0a84ff?style=for-the-badge&logo=safari&logoColor=white)](https://peruse.pages.dev/)
-[![Download](https://img.shields.io/badge/Download-macOS_·_Windows-1d1d1f?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/storitellah/peruse/releases)
+[![Live](https://img.shields.io/badge/Open-peruse.pages.dev-0a84ff?style=for-the-badge&logo=safari&logoColor=white)](https://peruse.pages.dev/)
+[![Install](https://img.shields.io/badge/Install-as_an_app-1d1d1f?style=for-the-badge&logo=googlechrome&logoColor=white)](https://peruse.pages.dev/)
 [![MIT](https://img.shields.io/badge/MIT-34c759?style=for-the-badge)](./LICENSE)
 
 </div>
@@ -66,7 +66,9 @@ Encrypted, compressed, metadata-only catalog snapshots. Thousands of photos → 
 
 <div align="center">
 
-**[⬇︎ Download for macOS / Windows](https://github.com/storitellah/peruse/releases)** &nbsp;·&nbsp; **[▶︎ Open in browser](https://peruse.pages.dev/)**
+**[▶︎ Open in browser](https://peruse.pages.dev/)** &nbsp;·&nbsp; **Install as an app** from the browser’s address bar (or Settings → Install)
+
+<sub>Native macOS `.dmg` / Windows `.exe` builds are published on <a href="https://github.com/storitellah/peruse/releases">Releases</a> for each tagged version.</sub>
 
 </div>
 

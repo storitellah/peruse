@@ -15,8 +15,6 @@ const TAB_TITLES: Record<string, string> = {
   thisDay: "This Day",
   attributes: "Devices",
   duplicates: "Duplicates",
-  places: "Places",
-  themes: "Themes",
   settings: "Settings",
 };
 

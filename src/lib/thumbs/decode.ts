@@ -1,105 +1,148 @@
-// On-device image decoding for thumbnails and analysis.
+// Thumbnail decoding — Worker pool with a main-thread fallback.
 //
-// We decode with the browser's hardware-accelerated `createImageBitmap` and
-// downscale onto a canvas. Two outputs come from one decode:
-//   - a compact JPEG thumbnail object-URL for the grid, and
-//   - a tiny greyscale pixel buffer reused by the perceptual-hash stage.
-// The full-resolution pixels are never retained; only the downscaled result.
+// `decodeThumb` returns a compact JPEG thumbnail blob plus a greyscale buffer
+// for perceptual hashing. When the platform supports Workers + OffscreenCanvas
+// (Chromium, modern Safari/Firefox), decoding runs in a pool of background
+// threads so the UI never janks. Otherwise it falls back to the main thread.
 
-export interface DecodeResult {
-  thumbUrl: string;
+export interface ThumbResult {
+  thumbBlob: Blob;
   width: number;
   height: number;
   aspect: number;
-  /** Greyscale luminance at a fixed small size, for perceptual hashing. */
   grey: { data: Uint8ClampedArray; w: number; h: number };
 }
 
-const THUMB_MAX = 512; // longest edge of the grid thumbnail
-const HASH_W = 9; // dHash needs (N+1) x N samples
+const THUMB_MAX = 448;
+const HASH_W = 9;
 const HASH_H = 8;
 
-function getCanvas(w: number, h: number): { canvas: OffscreenCanvas | HTMLCanvasElement; ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D } {
-  if (typeof OffscreenCanvas !== "undefined") {
-    const canvas = new OffscreenCanvas(w, h);
-    const ctx = canvas.getContext("2d", { willReadFrequently: true }) as OffscreenCanvasRenderingContext2D;
-    return { canvas, ctx };
-  }
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d", { willReadFrequently: true }) as CanvasRenderingContext2D;
-  return { canvas, ctx };
+// --- Worker pool ----------------------------------------------------------
+
+interface Pending {
+  resolve: (r: ThumbResult) => void;
+  reject: (e: unknown) => void;
 }
 
-async function toBlob(canvas: OffscreenCanvas | HTMLCanvasElement): Promise<Blob> {
-  if ("convertToBlob" in canvas) {
-    return canvas.convertToBlob({ type: "image/jpeg", quality: 0.82 });
+let pool: Worker[] | null = null;
+let idle: Worker[] = [];
+const queue: { blob: Blob; p: Pending }[] = [];
+const inflight = new Map<Worker, Pending>();
+let jobSeq = 0;
+
+function workersSupported(): boolean {
+  return (
+    typeof Worker !== "undefined" &&
+    typeof OffscreenCanvas !== "undefined" &&
+    typeof createImageBitmap !== "undefined"
+  );
+}
+
+function initPool() {
+  if (pool) return;
+  const n = Math.min(4, Math.max(2, (navigator.hardwareConcurrency || 4) - 1));
+  pool = [];
+  for (let i = 0; i < n; i++) {
+    const w = new Worker(new URL("./decodeWorker.ts", import.meta.url), { type: "module" });
+    w.onmessage = (e: MessageEvent) => {
+      const p = inflight.get(w);
+      inflight.delete(w);
+      idle.push(w);
+      if (p) {
+        const d = e.data;
+        if (d.ok) {
+          p.resolve({
+            thumbBlob: new Blob([d.thumb], { type: "image/jpeg" }),
+            width: d.width,
+            height: d.height,
+            aspect: d.aspect,
+            grey: { data: d.grey, w: d.hashW, h: d.hashH },
+          });
+        } else {
+          p.reject(new Error("worker decode failed"));
+        }
+      }
+      dispatch();
+    };
+    w.onerror = () => {
+      const p = inflight.get(w);
+      inflight.delete(w);
+      idle.push(w);
+      p?.reject(new Error("worker error"));
+      dispatch();
+    };
+    pool.push(w);
+    idle.push(w);
   }
-  return new Promise((resolve, reject) => {
-    (canvas as HTMLCanvasElement).toBlob(
-      (b) => (b ? resolve(b) : reject(new Error("toBlob failed"))),
-      "image/jpeg",
-      0.82
-    );
+}
+
+function dispatch() {
+  while (idle.length && queue.length) {
+    const w = idle.pop()!;
+    const job = queue.shift()!;
+    inflight.set(w, job.p);
+    w.postMessage({ id: ++jobSeq, blob: job.blob });
+  }
+}
+
+function decodeViaWorker(blob: Blob): Promise<ThumbResult> {
+  initPool();
+  return new Promise<ThumbResult>((resolve, reject) => {
+    queue.push({ blob, p: { resolve, reject } });
+    dispatch();
   });
 }
 
-export async function decodeBlob(blob: Blob): Promise<DecodeResult> {
-  // Ask the decoder to downscale during decode: for a 12 MP phone photo this
-  // produces a ~512 px bitmap directly instead of rasterising the full frame
-  // and shrinking it afterwards — dramatically less work and memory per image,
-  // which is what makes thumbnails appear quickly.
-  let bitmap: ImageBitmap;
-  const opts: ImageBitmapOptions = {
-    imageOrientation: "from-image",
-    resizeWidth: THUMB_MAX,
-    resizeHeight: THUMB_MAX,
-    resizeQuality: "medium",
-  };
-  try {
-    // Probe true dimensions cheaply first so we can preserve aspect ratio.
-    const probe = await createImageBitmap(blob);
-    const w0 = probe.width;
-    const h0 = probe.height;
-    const scale = Math.min(1, THUMB_MAX / Math.max(w0, h0));
-    opts.resizeWidth = Math.max(1, Math.round(w0 * scale));
-    opts.resizeHeight = Math.max(1, Math.round(h0 * scale));
-    probe.close?.();
-    bitmap = await createImageBitmap(blob, opts);
-    return await rasterise(bitmap, w0, h0);
-  } catch {
-    // Some formats (e.g. HEIC) may not decode in every browser; last-ditch try.
-    bitmap = await createImageBitmap(blob);
-    return await rasterise(bitmap, bitmap.width, bitmap.height);
-  }
-}
+// --- Main-thread fallback -------------------------------------------------
 
-async function rasterise(bitmap: ImageBitmap, w0: number, h0: number): Promise<DecodeResult> {
-  const aspect = w0 / h0 || 1;
+async function decodeMainThread(blob: Blob): Promise<ThumbResult> {
+  let bitmap: ImageBitmap;
+  let w0: number;
+  let h0: number;
+  try {
+    const probe = await createImageBitmap(blob);
+    w0 = probe.width;
+    h0 = probe.height;
+    const scale = Math.min(1, THUMB_MAX / Math.max(w0, h0));
+    probe.close?.();
+    bitmap = await createImageBitmap(blob, {
+      imageOrientation: "from-image",
+      resizeWidth: Math.max(1, Math.round(w0 * scale)),
+      resizeHeight: Math.max(1, Math.round(h0 * scale)),
+      resizeQuality: "medium",
+    });
+  } catch {
+    bitmap = await createImageBitmap(blob);
+    w0 = bitmap.width;
+    h0 = bitmap.height;
+  }
+
   const tw = bitmap.width;
   const th = bitmap.height;
-
-  const { canvas, ctx } = getCanvas(tw, th);
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "medium";
+  const canvas = document.createElement("canvas");
+  canvas.width = tw;
+  canvas.height = th;
+  const ctx = canvas.getContext("2d")!;
   ctx.drawImage(bitmap, 0, 0, tw, th);
-  const thumbBlob = await toBlob(canvas);
-  const thumbUrl = URL.createObjectURL(thumbBlob);
+  const thumbBlob: Blob = await new Promise((res, rej) =>
+    canvas.toBlob((b) => (b ? res(b) : rej(new Error("toBlob failed"))), "image/jpeg", 0.8)
+  );
 
-  // Greyscale downsample for hashing, reusing the same bitmap.
-  const { ctx: hctx } = getCanvas(HASH_W, HASH_H);
+  const hc = document.createElement("canvas");
+  hc.width = HASH_W;
+  hc.height = HASH_H;
+  const hctx = hc.getContext("2d", { willReadFrequently: true })!;
   hctx.drawImage(bitmap, 0, 0, HASH_W, HASH_H);
   const img = hctx.getImageData(0, 0, HASH_W, HASH_H);
   const grey = new Uint8ClampedArray(HASH_W * HASH_H);
   for (let i = 0; i < HASH_W * HASH_H; i++) {
-    const r = img.data[i * 4];
-    const g = img.data[i * 4 + 1];
-    const b = img.data[i * 4 + 2];
-    grey[i] = (r * 0.299 + g * 0.587 + b * 0.114) | 0;
+    grey[i] = (img.data[i * 4] * 0.299 + img.data[i * 4 + 1] * 0.587 + img.data[i * 4 + 2] * 0.114) | 0;
   }
-
   bitmap.close?.();
 
-  return { thumbUrl, width: w0, height: h0, aspect, grey: { data: grey, w: HASH_W, h: HASH_H } };
+  return { thumbBlob, width: w0, height: h0, aspect: w0 / h0 || 1, grey: { data: grey, w: HASH_W, h: HASH_H } };
+}
+
+export function decodeThumb(blob: Blob): Promise<ThumbResult> {
+  return workersSupported() ? decodeViaWorker(blob) : decodeMainThread(blob);
 }

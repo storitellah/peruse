@@ -10,7 +10,15 @@
 // only walks the tree the user explicitly granted.
 
 import type { Photo } from "../../types";
-import { IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, baseName, extOf, makeId } from "../util/misc";
+import {
+  IMAGE_EXTENSIONS,
+  VIDEO_EXTENSIONS,
+  RAW_EXTENSIONS,
+  isScreenshotName,
+  baseName,
+  extOf,
+  makeId,
+} from "../util/misc";
 
 export interface ScannedFile {
   name: string;
@@ -19,6 +27,8 @@ export interface ScannedFile {
   sizeBytes: number;
   lastModified: number;
   isLivePhoto: boolean;
+  isScreenshot: boolean;
+  isRaw: boolean;
   handle?: FileSystemFileHandle;
   dirHandle?: FileSystemDirectoryHandle;
   file?: File;
@@ -71,13 +81,16 @@ async function walk(
   }
 
   for (const img of images) {
+    const ext = extOf(img.name);
     out.push({
       name: img.name,
       relPath: `${prefix}${img.name}`,
-      ext: extOf(img.name),
+      ext,
       sizeBytes: 0,
       lastModified: 0,
       isLivePhoto: videoStems.has(baseName(img.name).toLowerCase()),
+      isScreenshot: isScreenshotName(img.name),
+      isRaw: RAW_EXTENSIONS.has(ext),
       handle: img.handle,
       dirHandle: dir,
     });
@@ -117,6 +130,8 @@ export function scanFileList(files: FileList | File[]): ScannedFile[] {
       sizeBytes: file.size,
       lastModified: file.lastModified,
       isLivePhoto: videoKeys.has(dirOf(relPath) + baseName(file.name).toLowerCase()),
+      isScreenshot: isScreenshotName(file.name),
+      isRaw: RAW_EXTENSIONS.has(ext),
       file,
     });
   }
@@ -133,6 +148,8 @@ export function toPhoto(sf: ScannedFile): Photo {
     sizeBytes: sf.sizeBytes,
     lastModified: sf.lastModified,
     isLivePhoto: sf.isLivePhoto,
+    isScreenshot: sf.isScreenshot,
+    isRaw: sf.isRaw,
     handle: sf.handle,
     dirHandle: sf.dirHandle,
     file: sf.file,

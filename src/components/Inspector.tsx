@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useStore, deviceLabel } from "../state/store";
 import { Icon } from "./Icon";
 import { formatBytes, formatDateTime } from "../lib/util/misc";
@@ -14,8 +14,15 @@ export function Inspector() {
   const softDelete = useStore((s) => s.softDelete);
   const setInspectorOpen = useStore((s) => s.setInspectorOpen);
   const openLightbox = useStore((s) => s.openLightbox);
+  const requestThumb = useStore((s) => s.requestThumb);
 
   const [renameOpen, setRenameOpen] = useState(false);
+
+  // Ensure the hero preview has a thumbnail even if this photo was never
+  // scrolled into view (lazy decode).
+  useEffect(() => {
+    if (photo && !photo.thumbUrl) requestThumb(photo.id);
+  }, [photo, requestThumb]);
 
   const exifRows = useMemo(() => {
     if (!photo) return [];

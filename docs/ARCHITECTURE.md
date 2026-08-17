@@ -9,8 +9,9 @@ src/
 │   ├── fs/scanner.ts          Local, in-place directory scanning (FS Access API + fallback)
 │   ├── exif/extract.ts        EXIF/IPTC/XMP extraction (exifr), normalised to domain types
 │   ├── exif/xmpSidecar.ts     Non-destructive XMP sidecar writer
-│   ├── geo/cities.ts          Embedded offline gazetteer
-│   ├── geo/reverseGeocode.ts  Nearest-locality resolution (haversine)
+│   ├── geo/borders.ts         Point-in-polygon country resolution (lazy-loaded borders)
+│   ├── geo/cities.ts          Embedded offline gazetteer (city best-effort)
+│   ├── geo/reverseGeocode.ts  Country-authoritative reverse geocoding
 │   ├── thumbs/decode.ts       Decode-time downscaling → thumbnail + hash buffer
 │   ├── hash/phash.ts          dHash + Hamming distance
 │   ├── hash/dedupe.ts         Union-Find duplicate clustering + best-shot heuristic
@@ -27,20 +28,39 @@ src/
 └── src-tauri/                 Rust desktop shell (Tauri v2) + release CI
 ```
 
-## Enrichment pipeline
+## Scaling to 100k+ (enrichment + rendering)
 
-Imports flow through a single interleaved, **thumbnail-first** pass with bounded
-concurrency (scaled to `hardwareConcurrency`):
+Ingestion is designed so library size is effectively unbounded:
 
 ```
-open file once → decode thumbnail + perceptual hash → EXIF + reverse-geocode → (optional) AI tags
+scan (headers only) → EXIF + precise geocode  ──▶  metadata fills in progressively
+                                                    (aspect ratio from EXIF)
+lazy, on-view  ─────▶  thumbnail decode + perceptual hash
+                        (bounded LRU cache, object-URLs revoked on eviction)
 ```
 
-Each photo paints its thumbnail immediately, so the grid fills top-to-bottom
-during a scan instead of after it. Photo records are replaced (not mutated) per
-stage and batched on animation frames, so memoised tiles repaint precisely when
-their own data changes. Decoding uses `createImageBitmap` resize options to
-produce a ~512 px bitmap directly from a full-resolution photo.
+- **EXIF-first, no up-front decoding.** The enrichment pass reads only file
+  headers (fast, high concurrency), so 100k photos populate dates, devices,
+  dimensions, and countries without ever decoding pixels.
+- **Virtualized justified grid.** Only rows intersecting the viewport (+overscan)
+  are mounted; the visible set is a throttled snapshot so frequent patches during
+  a large import don't re-sort on every tick.
+- **Lazy thumbnails.** A tile decodes its thumbnail only when mounted, through a
+  concurrency-limited queue, into an LRU cache (object-URLs revoked on eviction)
+  so memory stays flat regardless of library size.
+- **Duplicate scan** is on-demand and uses **banded LSH** (4×16-bit bands) so
+  clustering is near-linear, not O(n²).
+
+Photo records are replaced (not mutated) per stage and batched on animation
+frames, so memoised tiles repaint precisely when their own data changes.
+
+## Precise geocoding
+
+The country is resolved by **point-in-polygon** against real border geometry
+(Natural Earth 1:50m, lazy-loaded, bbox-prefiltered ray casting). It is correct,
+not the nearest-city's country. City/region come from the gazetteer only when
+consistent with that country and close enough; otherwise they're omitted. No GPS
+in EXIF → the location is left blank.
 
 ## Ingestion
 

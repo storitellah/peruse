@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect } from "react";
 import { useStore } from "../state/store";
 import type { GridDensity, Photo } from "../types";
 import { Icon } from "./Icon";
@@ -13,9 +13,16 @@ interface Props {
 function TileImpl({ photo, width, height, density }: Props) {
   const select = useStore((s) => s.select);
   const openLightbox = useStore((s) => s.openLightbox);
+  const requestThumb = useStore((s) => s.requestThumb);
   // Subscribe to just this tile's selection so only the two affected tiles
   // re-render when the selection moves, not the whole grid.
   const selected = useStore((s) => s.selectedId === photo.id);
+
+  // Lazy decode: only tiles mounted by the virtualizer (near the viewport) ask
+  // for their thumbnail, and re-ask if the LRU cache evicted it while offscreen.
+  useEffect(() => {
+    if (!photo.thumbUrl) requestThumb(photo.id);
+  }, [photo.id, photo.thumbUrl, requestThumb]);
 
   const rating = photo.iptc.rating ?? 0;
   const topTag = photo.aiTags[0]?.label;
@@ -32,7 +39,7 @@ function TileImpl({ photo, width, height, density }: Props) {
         <img src={photo.thumbUrl} alt={photo.iptc.caption || photo.name} loading="lazy" draggable={false} />
       ) : (
         <div className="tile-skeleton">
-          <span className="spinner sm" />
+          {photo.isRaw ? <span className="tile-format">{photo.ext.toUpperCase()}</span> : <span className="spinner sm" />}
         </div>
       )}
 
@@ -46,6 +53,11 @@ function TileImpl({ photo, width, height, density }: Props) {
         <span className="tile-live" title="Live Photo">
           <span className="live-dot" />
           LIVE
+        </span>
+      )}
+      {photo.isScreenshot && (
+        <span className="tile-badge screenshot" title="Screenshot">
+          SCREENSHOT
         </span>
       )}
 

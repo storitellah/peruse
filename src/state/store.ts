@@ -13,6 +13,7 @@ import type {
   GridDensity,
   Photo,
   TabId,
+  Theme,
 } from "../types";
 import {
   pickAndScanDirectory,
@@ -23,6 +24,7 @@ import {
 import { readBlob } from "../lib/fs/scanner";
 import { extractMetadata, normalizeDevice } from "../lib/exif/extract";
 import { reverseGeocode } from "../lib/geo/reverseGeocode";
+import { ensureBorders } from "../lib/geo/borders";
 import { decodeBlob } from "../lib/thumbs/decode";
 import { dHash } from "../lib/hash/phash";
 import { findDuplicates } from "../lib/hash/dedupe";
@@ -75,6 +77,15 @@ interface PeruseState {
   aiRunning: boolean;
   aiProgress: number;
 
+  // Appearance / filtering
+  theme: Theme;
+  hideScreenshots: boolean;
+  hideNonCamera: boolean;
+
+  // Duplicate scan
+  dupScanning: boolean;
+  dupScanProgress: number;
+
   // Catalog backup
   backupFrequency: BackupFrequency;
   backupEncrypt: boolean;
@@ -101,6 +112,13 @@ interface PeruseState {
   restore: (id: string) => void;
   runAiTagging: () => Promise<void>;
   recomputeDuplicates: () => void;
+  scanDuplicates: () => Promise<void>;
+  requestThumb: (id: string) => void;
+  // appearance
+  initAppearance: () => void;
+  setTheme: (t: Theme) => void;
+  setHideScreenshots: (on: boolean) => void;
+  setHideNonCamera: (on: boolean) => void;
   // backup
   initBackup: () => Promise<void>;
   setBackupFrequency: (f: BackupFrequency) => void;
@@ -140,6 +158,13 @@ function lsSet(key: string, val: string) {
   } catch {
     /* private mode / disabled storage — settings just won't persist */
   }
+}
+
+function applyTheme(t: Theme) {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement;
+  if (t === "system") root.removeAttribute("data-theme");
+  else root.setAttribute("data-theme", t);
 }
 
 const FREQ_MS: Record<BackupFrequency, number> = {
@@ -202,66 +227,120 @@ function effective(get: GetFn, id: string): Photo | undefined {
 
 let toastSeq = 0;
 
+// --- lazy thumbnail decoding ---------------------------------------------
+// Thumbnails decode on demand as tiles scroll into view, with a bounded LRU so
+// memory stays flat even across a 100k-photo library. Evicted thumbnails are
+// re-decoded if they scroll back — cheap, and it keeps the working set small.
+const THUMB_CAP = 1800;
+const THUMB_CONCURRENCY = 6;
+const decodedOrder: string[] = [];
+const decodingSet = new Set<string>();
+const thumbFailed = new Set<string>();
+const thumbQueue: string[] = [];
+let activeDecodes = 0;
+
 export const useStore = create<PeruseState>((set, get) => {
   // Mirror AI model status into the store.
   onLoadStatus((s) => set({ aiStatus: s }));
 
   async function enrich(photos: Photo[]) {
-    // One interleaved pass per photo, thumbnail-first. The previous design
-    // decoded no thumbnails until EXIF for the *entire* library had finished,
-    // so a big folder showed nothing for a long time. Here each photo opens its
-    // file once, paints its thumbnail immediately, then fills in hash + EXIF —
-    // so tiles start appearing within the first frames of a scan and the grid
-    // fills top-to-bottom as decoding proceeds.
-    const concurrency = Math.min(6, Math.max(3, navigator.hardwareConcurrency || 4));
+    // EXIF-first enrichment. This pass reads only file headers (fast, high
+    // concurrency) — never full pixels — so it scales to 100k+ photos. It fills
+    // in date, device, dimensions (→ aspect ratio for layout), precise country,
+    // and camera/screenshot classification. Thumbnails are NOT decoded here;
+    // they decode lazily on-view (see requestThumb) so nothing blocks and memory
+    // stays bounded no matter how large the library is.
+    if (photos.some((p) => p.exif.gps)) void ensureBorders(); // warm the geocoder
+    const concurrency = Math.min(12, Math.max(4, (navigator.hardwareConcurrency || 4) * 2));
     await mapPool(photos, concurrency, async (p) => {
       let blob: Blob;
       try {
         blob = await readBlob(p);
       } catch {
-        patchPhoto(set, get, p.id, { stage: "ready" });
+        patchPhoto(set, get, p.id, { stage: "ready", isCameraPhoto: !p.isScreenshot });
         set((s) => ({ processed: s.processed + 1 }));
         return;
       }
-
-      // Size / mtime are read here (one file open) rather than during the scan.
       const sizeBytes = "size" in blob ? (blob as File).size : p.sizeBytes;
       const lastModified = "lastModified" in blob ? (blob as File).lastModified : p.lastModified;
 
-      // 1) Thumbnail + hash first — this is what the user sees.
-      try {
-        const dec = await decodeBlob(blob);
-        patchPhoto(set, get, p.id, {
-          thumbUrl: dec.thumbUrl,
-          aspect: dec.aspect,
-          phash: dHash(dec.grey),
-          sizeBytes,
-          lastModified,
-          exif: { ...(effective(get, p.id)?.exif ?? {}), width: dec.width, height: dec.height },
-          stage: "thumb",
-        });
-      } catch {
-        patchPhoto(set, get, p.id, { sizeBytes, lastModified, stage: "thumb" });
-      }
-
-      // 2) EXIF + reverse geocode second — preserves the decoded dimensions.
       try {
         const { exif, iptc } = await extractMetadata(blob, lastModified);
-        if (exif.gps) exif.place = reverseGeocode(exif.gps);
-        const cur = effective(get, p.id);
+        if (exif.gps) exif.place = await reverseGeocode(exif.gps);
+        // A real camera photo has camera make/model and isn't a screenshot.
+        const isCameraPhoto = !p.isScreenshot && !!(exif.make || exif.model);
+        const aspect = exif.width && exif.height ? exif.width / exif.height : p.aspect;
         patchPhoto(set, get, p.id, {
-          exif: { ...exif, width: cur?.exif?.width ?? exif.width, height: cur?.exif?.height ?? exif.height },
+          exif,
           iptc: { ...p.iptc, ...iptc, people: iptc.people ?? p.iptc.people, tags: iptc.tags ?? p.iptc.tags },
+          aspect,
+          sizeBytes,
+          lastModified,
+          isCameraPhoto,
           stage: "ready",
         });
       } catch {
-        patchPhoto(set, get, p.id, { stage: "ready" });
+        patchPhoto(set, get, p.id, { sizeBytes, lastModified, isCameraPhoto: !p.isScreenshot, stage: "ready" });
       }
 
       set((s) => ({ processed: s.processed + 1 }));
     });
+  }
 
-    get().recomputeDuplicates();
+  async function decodeOne(p: Photo) {
+    let blob: Blob;
+    try {
+      blob = await readBlob(p);
+    } catch {
+      thumbFailed.add(p.id);
+      return;
+    }
+    try {
+      const dec = await decodeBlob(blob);
+      const cur = effective(get, p.id);
+      patchPhoto(set, get, p.id, {
+        thumbUrl: dec.thumbUrl,
+        aspect: cur?.exif?.width && cur?.exif?.height ? cur.aspect : dec.aspect,
+        phash: p.phash ?? dHash(dec.grey),
+        exif: {
+          ...(cur?.exif ?? {}),
+          width: cur?.exif?.width ?? dec.width,
+          height: cur?.exif?.height ?? dec.height,
+        },
+      });
+      decodedOrder.push(p.id);
+      while (decodedOrder.length > THUMB_CAP) {
+        const old = decodedOrder.shift()!;
+        if (old === p.id) continue;
+        const op = get().photos.find((x) => x.id === old);
+        if (op?.thumbUrl) {
+          try {
+            URL.revokeObjectURL(op.thumbUrl);
+          } catch {
+            /* already revoked */
+          }
+          patchPhoto(set, get, old, { thumbUrl: undefined });
+        }
+      }
+    } catch {
+      thumbFailed.add(p.id); // e.g. a RAW/HEIC the browser can't decode
+    }
+  }
+
+  function pumpThumbs() {
+    while (activeDecodes < THUMB_CONCURRENCY && thumbQueue.length) {
+      const id = thumbQueue.shift()!;
+      if (decodingSet.has(id) || thumbFailed.has(id)) continue;
+      const p = get().photos.find((x) => x.id === id);
+      if (!p || p.softDeleted || p.thumbUrl) continue;
+      decodingSet.add(id);
+      activeDecodes += 1;
+      void decodeOne(p).finally(() => {
+        activeDecodes -= 1;
+        decodingSet.delete(id);
+        pumpThumbs();
+      });
+    }
   }
 
   return {
@@ -286,6 +365,13 @@ export const useStore = create<PeruseState>((set, get) => {
     aiStatus: { phase: "idle" },
     aiRunning: false,
     aiProgress: 0,
+
+    theme: "system",
+    hideScreenshots: false,
+    hideNonCamera: false,
+
+    dupScanning: false,
+    dupScanProgress: 0,
 
     backupFrequency: "off",
     backupEncrypt: false,
@@ -428,6 +514,68 @@ export const useStore = create<PeruseState>((set, get) => {
 
     recomputeDuplicates: () => {
       set({ duplicateGroups: findDuplicates(get().photos) });
+    },
+
+    requestThumb: (id) => {
+      const p = get().photos.find((x) => x.id === id);
+      if (!p || p.softDeleted || p.thumbUrl || decodingSet.has(id) || thumbFailed.has(id)) return;
+      if (!thumbQueue.includes(id)) thumbQueue.push(id);
+      pumpThumbs();
+    },
+
+    async scanDuplicates() {
+      if (get().dupScanning) return;
+      const targets = get().photos.filter((p) => !p.softDeleted && !p.phash);
+      if (!targets.length) {
+        get().recomputeDuplicates();
+        return;
+      }
+      set({ dupScanning: true, dupScanProgress: 0 });
+      let done = 0;
+      // Decode small + hash only (thumbnail is a bonus if it fits the cache).
+      await mapPool(targets, THUMB_CONCURRENCY, async (p) => {
+        try {
+          const blob = await readBlob(p);
+          const dec = await decodeBlob(blob);
+          patchPhoto(set, get, p.id, { phash: dHash(dec.grey) });
+          // Don't hold every thumbnail from a full-library scan in memory.
+          try {
+            URL.revokeObjectURL(dec.thumbUrl);
+          } catch {
+            /* noop */
+          }
+        } catch {
+          /* undecodable — skip */
+        }
+        done += 1;
+        if (done % 50 === 0 || done === targets.length) {
+          set({ dupScanProgress: Math.round((done / targets.length) * 100) });
+        }
+      });
+      set({ dupScanning: false });
+      get().recomputeDuplicates();
+      get().toast(`Scanned ${targets.length} photos for duplicates`);
+    },
+
+    initAppearance: () => {
+      const t = (lsGet("peruse.theme") as Theme) || "system";
+      const hs = lsGet("peruse.hideScreenshots") === "1";
+      const hnc = lsGet("peruse.hideNonCamera") === "1";
+      applyTheme(t);
+      set({ theme: t, hideScreenshots: hs, hideNonCamera: hnc });
+    },
+    setTheme: (t) => {
+      lsSet("peruse.theme", t);
+      applyTheme(t);
+      set({ theme: t });
+    },
+    setHideScreenshots: (on) => {
+      lsSet("peruse.hideScreenshots", on ? "1" : "0");
+      set({ hideScreenshots: on });
+    },
+    setHideNonCamera: (on) => {
+      lsSet("peruse.hideNonCamera", on ? "1" : "0");
+      set({ hideNonCamera: on });
     },
 
     async initBackup() {
@@ -592,6 +740,11 @@ export function canUseFsAccess(): boolean {
 /** Apply search + sidebar filter, returning the visible, ranked set. */
 export function selectVisible(state: PeruseState): Photo[] {
   let list = state.photos.filter((p) => !p.softDeleted);
+
+  // Screenshots / non-camera images: hidden when the user opts in. `isCameraPhoto`
+  // is undefined until EXIF is read, so we only exclude once we're sure.
+  if (state.hideScreenshots) list = list.filter((p) => !p.isScreenshot);
+  if (state.hideNonCamera) list = list.filter((p) => p.isCameraPhoto !== false);
 
   const f = state.activeFilter;
   if (f.kind === "device") list = list.filter((p) => deviceLabel(p) === f.value);

@@ -187,6 +187,13 @@ export function Sidebar() {
             <span>Backup catalog…</span>
             {backupFrequency !== "off" && <span className="side-count">{backupFrequency}</span>}
           </button>
+          <button
+            className={`side-row sm ${activeTab === "settings" ? "active" : ""}`}
+            onClick={() => setTab("settings")}
+          >
+            <Icon name="gear" size={15} />
+            <span>Settings</span>
+          </button>
           <input
             ref={inputRef}
             type="file"

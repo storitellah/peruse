@@ -17,6 +17,7 @@ const TAB_TITLES: Record<string, string> = {
   duplicates: "Duplicates",
   places: "Places",
   themes: "Themes",
+  settings: "Settings",
 };
 
 export function TopBar() {

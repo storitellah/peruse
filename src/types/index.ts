@@ -78,6 +78,13 @@ export interface Photo {
   /** True when a sibling motion file (e.g. .mov) makes this a Live Photo.
    *  Peruse catalogs the still and ignores the paired video. */
   isLivePhoto: boolean;
+  /** Flagged from the filename (e.g. "Screenshot_2024…"). */
+  isScreenshot: boolean;
+  /** Camera RAW format (decoded preview may be unavailable in-browser). */
+  isRaw: boolean;
+  /** Resolved after EXIF: a real camera capture (has camera make/model,
+   *  and not a screenshot). Undefined until EXIF has been read. */
+  isCameraPhoto?: boolean;
   /** Handle used to re-open the file lazily (undefined in fallback mode). */
   handle?: FileSystemFileHandle;
   /** Handle of the containing directory, for writing sidecars in place. */
@@ -116,7 +123,10 @@ export type TabId =
   | "attributes"
   | "duplicates"
   | "places"
-  | "themes";
+  | "themes"
+  | "settings";
+
+export type Theme = "system" | "light" | "dark";
 
 export type GridDensity = "compact" | "medium" | "detailed";
 

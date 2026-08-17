@@ -30,7 +30,8 @@ export type IconName =
   | "grid"
   | "rename"
   | "check"
-  | "lock";
+  | "lock"
+  | "gear";
 
 const PATHS: Record<IconName, JSX.Element> = {
   photos: (
@@ -136,6 +137,12 @@ const PATHS: Record<IconName, JSX.Element> = {
     <>
       <rect x="5" y="10.5" width="14" height="10" rx="2.5" />
       <path d="M8 10.5V8a4 4 0 018 0v2.5" />
+    </>
+  ),
+  gear: (
+    <>
+      <circle cx="12" cy="12" r="3.2" />
+      <path d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4L5.3 5.3" />
     </>
   ),
 };
